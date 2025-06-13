@@ -147,3 +147,4 @@ dmypy.json
 /test_imgs
 .DS_Store
 /out
+/src/mask_generation/out
