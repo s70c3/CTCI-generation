@@ -1,22 +1,8 @@
-import os
 import math
-from PIL import Image
-from omegaconf import OmegaConf
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
-from torch.utils.data import DataLoader
-from torchvision import datasets
-import torchvision.transforms as transforms
-
 import lightning.pytorch as pl
-from lightning import Trainer
-
-from accelerate import Accelerator
-from diffusers import AutoencoderKL
-
-from src.common.callbacks import GenerateImagesVQVAECallback
 
 
 class VectorQuantizer(nn.Module):
@@ -168,103 +154,3 @@ class VQVAE(pl.LightningModule):
 
     def configure_optimizers(self):
         return torch.optim.Adam(self.parameters(), lr=self.hparams.lr)
-
-
-class ImageFolderDataset(torch.utils.data.Dataset):
-    def __init__(self, root_dir, transform=None):
-        self.root_dir = root_dir
-        self.transform = transform
-        self.listdir = os.listdir(self.root_dir)
-
-    def __len__(self):
-        return len(self.listdir)
-
-    def __getitem__(self, idx):
-        img_path = os.path.join(self.root_dir, self.listdir[idx])
-        img = Image.open(img_path).convert('L')
-        if self.transform:
-            img = self.transform(img)
-        return img
-
-
-if __name__ == "__main__":
-    config = OmegaConf.load(r"F:\\ITMO_ML\\CTCI-generation\\configs\\vqvae_config.yaml")
-
-    output_dir = config.out_directories.output_dir
-    images_logs_dir = config.out_directories.images_logs_dir
-    # loss_logs_dir = config.out_directories.loss_logs_dir
-    # weights_logs_dir = config.out_directories.weights_logs_dir
-
-    train_images_dir = config.datasets_dirs.train_images_dir
-    val_images_dir = config.datasets_dirs.val_images_dir
-
-    num_epochs = config.train_params.num_epochs
-    learning_rate = config.train_params.learning_rate
-    batch_size = config.train_params.batch_size
-    num_workers = config.train_params.num_workers
-    image_size = config.train_params.image_size
-    log_images_step = config.train_params.log_images_step
-    log_loss_step = config.train_params.log_loss_step
-    log_weights_step = config.train_params.log_weights_step
-
-    device = config.hardware.device
-    precision = config.hardware.precision
-
-    model = VQVAE(
-        in_channels=1,
-        hidden_dim=4,
-        num_residual_blocks=8,
-        num_embeddings=256,
-        embedding_dim=4,
-        commitment_cost=0.5,
-        lr = learning_rate,
-    )
-
-    transform = transforms.Compose([
-        transforms.Resize((
-            int(image_size * 1.25),
-            int(image_size * 1.25)
-        )),
-        transforms.RandomCrop(image_size),
-        transforms.ToTensor()
-    ])
-
-    accelerator = Accelerator()
-
-    train_dataset = ImageFolderDataset(train_images_dir, transform=transform)
-    val_dataset = ImageFolderDataset(val_images_dir, transform=transform)
-
-    train_loader = DataLoader(
-        train_dataset,
-        batch_size=batch_size,
-        shuffle=True,
-        num_workers=num_workers
-    )
-    val_loader = DataLoader(
-        val_dataset,
-        batch_size=batch_size,
-        shuffle=False,
-        num_workers=num_workers
-    )
-
-    if device == "cuda":
-        torch.set_float32_matmul_precision('medium')
-
-    log_callback = GenerateImagesVQVAECallback(
-        log_dir=images_logs_dir,
-        num_generate=4,
-        log_every_n_steps=log_images_step
-    )
-
-    trainer = Trainer(
-        max_epochs=num_epochs,
-        accelerator=device,
-        precision=precision,
-        default_root_dir=output_dir,
-        log_every_n_steps=100,
-        # accumulate_grad_batches=2,
-        callbacks=[log_callback],
-        gradient_clip_val=1.0
-    )
-
-    trainer.fit(model, train_loader, val_loader)

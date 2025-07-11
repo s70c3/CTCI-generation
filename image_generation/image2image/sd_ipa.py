@@ -1,20 +1,13 @@
 from typing import List
-
 from PIL import Image
-from omegaconf import OmegaConf
 
 import torch
 import torch.nn as nn
 
-from accelerate import Accelerator
-from lightning.pytorch import Trainer
-from diffusers import StableDiffusionPipeline, AutoencoderKL, UNet2DConditionModel, \
-    DDPMScheduler
-from transformers import AutoTokenizer, CLIPTextModel, CLIPVisionModelWithProjection, CLIPImageProcessor
+from diffusers import StableDiffusionPipeline
+from transformers import CLIPImageProcessor
 
-from src.data.data_modules import Image2ImageDataModule
-from src.common.base_diffusion_module import BaseDiffusionLightningModule, BaseDiffusionImage2ImageLightningModule
-from src.common.callbacks import GenerateImage2ImageCallback, TrainingLossCallback, SaveWeightsCallback
+from image_generation.image2image.base import BaseDiffusionImage2ImageLightningModule
 
 
 class AttnProcessor(nn.Module):
@@ -349,7 +342,7 @@ class IPAdapterLightningModule(BaseDiffusionImage2ImageLightningModule):
     @torch.no_grad()
     def inference(
             self, captions, conditions, clip_image_embeds=None,
-            negative_prompt="best quality regular shapes even surface round metallicslippery polished smooth",
+            negative_prompt="monochrome, lowres, bad anatomy, worst quality, low quality",
             num_inference_steps=50, guidance_scale=7.5, scale=1.0, num_samples=1, seed=None
     ):
         """
@@ -413,106 +406,3 @@ class IPAdapterLightningModule(BaseDiffusionImage2ImageLightningModule):
 
         return images
 
-
-if __name__ == "__main__":
-    config = OmegaConf.load("configs/sd_ipa_config.yaml")
-
-    pretrained_model_name = config.base_model.pretrained_model_name
-
-    output_dir = config.out_directories.output_dir
-    images_logs_dir = config.out_directories.images_logs_dir
-    loss_logs_dir = config.out_directories.loss_logs_dir
-    weights_logs_dir = config.out_directories.weights_logs_dir
-
-    train_images_dir = config.datasets_dirs.train_images_dir
-    train_masks_dir = config.datasets_dirs.train_masks_dir
-    val_images_dir = config.datasets_dirs.val_images_dir
-    val_masks_dir = config.datasets_dirs.val_masks_dir
-
-    num_epochs = config.train_params.num_epochs
-    learning_rate = config.train_params.learning_rate
-    batch_size = config.train_params.batch_size
-    image_size = config.train_params.image_size
-    log_images_step = config.train_params.log_images_step
-    log_loss_step = config.train_params.log_loss_step
-    log_weights_step = config.train_params.log_weights_step
-
-    device = config.hardware.device
-    precision = config.hardware.precision
-
-    accelerator = Accelerator()
-
-    tokenizer = AutoTokenizer.from_pretrained(
-        pretrained_model_name,
-        subfolder="tokenizer",
-        use_fast=False
-    )
-    text_encoder = CLIPTextModel.from_pretrained(
-        pretrained_model_name,
-        subfolder="text_encoder"
-    )
-    image_encoder = CLIPVisionModelWithProjection.from_pretrained(
-        "laion/CLIP-ViT-H-14-laion2B-s32B-b79K"
-    )
-    vae = AutoencoderKL.from_pretrained(
-        pretrained_model_name,
-        subfolder="vae"
-    )
-    unet = UNet2DConditionModel.from_pretrained(
-        pretrained_model_name,
-        subfolder="unet"
-    )
-    image_proj_model = ImageProjModel(
-        cross_attention_dim=unet.config.cross_attention_dim,
-        clip_embeddings_dim=image_encoder.config.projection_dim,
-        clip_extra_context_tokens=4,
-    )
-
-    noise_scheduler = DDPMScheduler(beta_start=0.0001, beta_end=0.02, num_train_timesteps=1000)
-    # noise_scheduler = EulerDiscreteScheduler.from_pretrained(pretrained_model_name, subfolder="scheduler")
-
-    text_encoder.requires_grad_(False)
-    image_encoder.requires_grad_(False)
-    vae.requires_grad_(False)
-    unet.requires_grad_(False)
-
-    data_module = Image2ImageDataModule(
-        train_images_dir, train_masks_dir, val_images_dir, val_masks_dir,
-        batch_size=batch_size, image_size=image_size
-    )
-
-    num_training_steps = num_epochs * len(data_module.train_dataloader())
-    model = IPAdapterLightningModule(
-        vae, unet, text_encoder, tokenizer, image_encoder, noise_scheduler, learning_rate, num_training_steps
-    )
-
-    model, data_module = accelerator.prepare([model, data_module])
-
-    log_callback = GenerateImage2ImageCallback(
-        log_dir=images_logs_dir,
-        log_every_n_steps=log_images_step
-    )
-    loss_callback = TrainingLossCallback(
-        log_dir=loss_logs_dir,
-        log_every_n_steps=log_loss_step
-    )
-    save_callback = SaveWeightsCallback(
-        log_dir=weights_logs_dir,
-        modules_to_save=["ip_adapter"],
-        log_every_n_steps=log_weights_step
-    )
-
-    trainer = Trainer(
-        max_epochs=num_epochs,
-        accelerator=device,
-        devices=accelerator.num_processes,
-        precision=precision,
-        strategy="auto",
-        default_root_dir=output_dir,
-        log_every_n_steps=10000,
-        # accumulate_grad_batches=2,
-        callbacks=[log_callback, loss_callback, save_callback]
-    )
-
-    trainer.fit(model, datamodule=data_module)
-    print(f"Training complete! Model saved to: {weights_logs_dir}")

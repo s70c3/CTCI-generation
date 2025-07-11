@@ -1,0 +1,21 @@
+base_model:
+  pretrained_model_name: "runwayml/stable-diffusion-v1-5"
+
+train:
+  lr: 1e-5
+  batch_size: 4
+  num_epochs: 10
+  num_training_steps: 1000
+
+data:
+  images_dir: "/path/to/images"
+  conditioning_images_dir: "/path/to/images"
+  caption: "flotation froth"
+  width: 256
+  height: 256
+  conditioning_width: 256
+  conditioning_height: 256
+
+generate:
+  num_inference_steps: 50
+  guidance_scale: 7.5
